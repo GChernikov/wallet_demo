@@ -1,0 +1,80 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: all
+  disable:
+    - depguard
+    - exhaustive
+    - exhaustruct
+    - forbidigo
+    - godot
+    - godox
+    - mnd
+    - nlreturn
+    - noinlineerr
+    - tagliatelle
+    - testpackage
+    - unparam
+    - varnamelen
+    - wrapcheck
+    - wsl
+    - wsl_v5
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    funlen:
+      lines: 100
+      statements: 60
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+    gofmt:
+      simplify: true
+    gci:
+      sections:
+        - standard
+        - default
+        - localmodule
+    gocyclo:
+      min-complexity: 20
+    cyclop:
+      max-complexity: 20
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    misspell:
+      locale: US
+    lll:
+      line-length: 120
+      tab-width: 4
+    unparam:
+      check-exported: true
+    nakedret:
+      max-func-lines: 1
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: false
+    gocritic:
+      enabled-tags:
+        - performance
+        - diagnostic
+      settings:
+        captLocal:
+          paramsOnly: true
+        rangeValCopy:
+          sizeThreshold: 32
+    revive:
+      ignore-generated-header: true
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+        - name: blank-imports
+          disabled: true
