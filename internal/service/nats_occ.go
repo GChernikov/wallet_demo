@@ -11,31 +11,24 @@ import (
 	natsrepo "github.com/gchernikov/wallet_demo/internal/repository/nats"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/synadia-io/orbit.go/jetstreamext"
 )
 
 // NatsOCCService implements event-sourced balance updates via NATS JetStream.
-// Balance is derived from events in the stream; MySQL is not used.
+// Balance is the sum of all delta events in the stream — MySQL is not used.
 // OCC is enforced via WithExpectLastSequencePerSubject on every publish.
 //
-// On conflict the service falls back to a single Direct Get API call
-// (stream.GetLastMsgForSubject) instead of waiting for the projection or
-// creating an ephemeral consumer.  One roundtrip is sufficient because each
-// event carries the cumulative NewBalance after it was applied.
+// Fast path: projection snapshot → attempt OCC publish.
+// Conflict path: jetstreamext.GetBatch fetches the tail events directly
+// (no consumer creation, no polling) — same pattern as wallet manager.
 type NatsOCCService struct {
 	js         jetstream.JetStream
-	stream     jetstream.Stream // cached for Direct Get — avoids per-call StreamInfo lookups
 	proj       *natsrepo.Projection
 	maxRetries int
 }
 
-// NewNatsOCCService wires up the service.  It resolves the stream handle once
-// so that subsequent directGet calls do not pay the StreamInfo lookup cost.
-func NewNatsOCCService(js jetstream.JetStream, proj *natsrepo.Projection, maxRetries int) (*NatsOCCService, error) {
-	stream, err := js.Stream(context.Background(), natsrepo.StreamName)
-	if err != nil {
-		return nil, fmt.Errorf("resolve stream %s: %w", natsrepo.StreamName, err)
-	}
-	return &NatsOCCService{js: js, stream: stream, proj: proj, maxRetries: maxRetries}, nil
+func NewNatsOCCService(js jetstream.JetStream, proj *natsrepo.Projection, maxRetries int) *NatsOCCService {
+	return &NatsOCCService{js: js, proj: proj, maxRetries: maxRetries}
 }
 
 func (s *NatsOCCService) Update(ctx context.Context, req model.UpdateRequest) (model.UpdateResponse, error) {
@@ -61,7 +54,6 @@ func (s *NatsOCCService) Update(ctx context.Context, req model.UpdateRequest) (m
 
 		payload, err := json.Marshal(natsrepo.WalletEvent{
 			Amount:        req.Amount,
-			NewBalance:    newBalance,
 			TransactionID: txID,
 			EventType:     creditOrDebit(req.Amount),
 		})
@@ -82,11 +74,11 @@ func (s *NatsOCCService) Update(ctx context.Context, req model.UpdateRequest) (m
 		}
 
 		// OCC conflict: another writer published ahead of us.
-		// Use Direct Get (no consumer, no waiting) to read the current state
-		// in a single roundtrip.
+		// Use jetstreamext.GetBatch (Direct Get, no consumer) to read the
+		// tail events for this wallet's subject and recompute current state.
 		var apiErr *jetstream.APIError
 		if errors.As(err, &apiErr) && apiErr.ErrorCode == 10071 {
-			curBalance, curSeq, err = s.directGet(ctx, subject)
+			curBalance, curSeq, err = s.fetchByDirectGet(ctx, subject, curBalance, curSeq)
 			if err != nil {
 				return model.UpdateResponse{}, err
 			}
@@ -100,19 +92,57 @@ func (s *NatsOCCService) Update(ctx context.Context, req model.UpdateRequest) (m
 	return model.UpdateResponse{}, &model.ConflictError{}
 }
 
-// directGet fetches the last event for the given wallet subject via Direct Get API
-// — one NATS request-reply, no consumer creation.
-// Returns the cumulative balance and stream sequence from the latest event.
-func (s *NatsOCCService) directGet(ctx context.Context, subject string) (int64, uint64, error) {
-	raw, err := s.stream.GetLastMsgForSubject(ctx, subject)
-	if err != nil {
-		return 0, 0, fmt.Errorf("direct get last msg: %w", err)
+// fetchByDirectGet reads all events for the wallet subject from fromSeq+1 onwards
+// using NATS Direct Get (jetstreamext.GetBatch) — no consumer is created.
+// Returns the updated (balance, lastSeq) after accumulating all tail deltas.
+func (s *NatsOCCService) fetchByDirectGet(
+	ctx context.Context,
+	subject string,
+	startBalance int64,
+	fromSeq uint64,
+) (int64, uint64, error) {
+	const batchSize = 256
+
+	balance := startBalance
+	lastSeq := fromSeq
+
+	for {
+		msgIter, err := jetstreamext.GetBatch(
+			ctx,
+			s.js,
+			natsrepo.StreamName,
+			batchSize,
+			jetstreamext.GetBatchSubject(subject),
+			jetstreamext.GetBatchSeq(lastSeq+1),
+		)
+		if err != nil {
+			return 0, 0, fmt.Errorf("direct get batch: %w", err)
+		}
+
+		count := 0
+		for msg, err := range msgIter {
+			if err != nil {
+				if errors.Is(err, jetstreamext.ErrNoMessages) {
+					break
+				}
+				return 0, 0, fmt.Errorf("iterate direct get: %w", err)
+			}
+
+			var ev natsrepo.WalletEvent
+			if err := json.Unmarshal(msg.Data, &ev); err != nil {
+				return 0, 0, fmt.Errorf("unmarshal event: %w", err)
+			}
+
+			balance += ev.Amount
+			lastSeq = msg.Sequence
+			count++
+		}
+
+		// Fewer messages than requested → we've read the full tail.
+		if count < batchSize {
+			break
+		}
 	}
 
-	var ev natsrepo.WalletEvent
-	if err := json.Unmarshal(raw.Data, &ev); err != nil {
-		return 0, 0, fmt.Errorf("unmarshal event: %w", err)
-	}
-
-	return ev.NewBalance, raw.Sequence, nil
+	return balance, lastSeq, nil
 }

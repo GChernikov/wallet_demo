@@ -48,11 +48,11 @@ func (p *Projection) Ready() <-chan struct{} {
 	return p.ready
 }
 
-func (p *Projection) apply(walletID string, newBalance int64, seq uint64) {
+func (p *Projection) apply(walletID string, amount int64, seq uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	e := p.state[walletID]
-	e.Balance = newBalance // absolute value from event, not accumulated delta
+	e.Balance += amount
 	e.LastSeq = seq
 	p.state[walletID] = e
 }
@@ -102,7 +102,7 @@ func (p *Projection) RunConsumer(ctx context.Context, js jetstream.JetStream) er
 			return
 		}
 
-		p.apply(walletID, ev.NewBalance, meta.Sequence.Stream)
+		p.apply(walletID, ev.Amount, meta.Sequence.Stream)
 		msg.Ack() //nolint:errcheck
 
 		if meta.NumPending == 0 {

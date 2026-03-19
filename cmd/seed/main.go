@@ -89,7 +89,6 @@ func generateAndPublish(js jetstream.JetStream, count int) []string {
 
 	seedPayload, _ := json.Marshal(natsrepo.WalletEvent{ //nolint:errchkjson
 		Amount:        1_000_000,
-		NewBalance:    1_000_000,
 		TransactionID: "seed",
 		EventType:     "credit",
 	})

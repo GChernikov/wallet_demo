@@ -11,11 +11,8 @@ const StreamName = "WALLETS"
 
 // WalletEvent is the event payload stored in the stream.
 // Amount is the delta (positive = credit, negative = debit).
-// NewBalance is the cumulative balance after applying this event — stored so that
-// a single GetLastMsgForSubject call is sufficient to recover current state on OCC conflict.
 type WalletEvent struct {
 	Amount        int64  `json:"amount"`
-	NewBalance    int64  `json:"new_balance"`
 	TransactionID string `json:"transaction_id"`
 	EventType     string `json:"event_type"`
 }
