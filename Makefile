@@ -14,7 +14,7 @@ docker-build:
 
 # Seed load test wallets (run after docker compose up)
 seed:
-	go run ./cmd/seed
+	NATS_URL=nats://localhost:4222 go run ./cmd/seed
 
 test:
 	go test -race ./...

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/gchernikov/wallet_demo/internal/model"
 	mysqlrepo "github.com/gchernikov/wallet_demo/internal/repository/mysql"
+	natsrepo "github.com/gchernikov/wallet_demo/internal/repository/nats"
 	"github.com/gchernikov/wallet_demo/internal/service"
 	"github.com/gchernikov/wallet_demo/migrations"
 	_ "github.com/go-sql-driver/mysql"
@@ -60,6 +62,33 @@ func run() error {
 	mux.HandleFunc("GET /diagnostics/noop", noopHandler)
 	mux.HandleFunc("GET /diagnostics/db-ping", dbPingHandler(stmts))
 	mux.HandleFunc("GET /check", checkHandler)
+
+	if cfg.natsURL != "" {
+		nc, js, err := natsrepo.Connect(cfg.natsURL)
+		if err != nil {
+			return fmt.Errorf("connect to nats: %w", err)
+		}
+		defer nc.Drain() //nolint:errcheck
+
+		proj := natsrepo.NewProjection()
+		consCtx, consCancel := context.WithCancel(context.Background())
+		defer consCancel()
+		go func() {
+			if err := proj.RunConsumer(consCtx, js); err != nil && consCtx.Err() == nil {
+				log.Printf("nats consumer error: %v", err)
+			}
+		}()
+
+		select {
+		case <-proj.Ready():
+			log.Println("nats projection ready")
+		case <-time.After(30 * time.Second):
+			return fmt.Errorf("nats projection did not become ready within 30s")
+		}
+
+		natsService := service.NewNatsOCCService(js, proj, cfg.natsMaxRetries)
+		mux.HandleFunc("POST /balances/update/nats-occ", updateHandler(natsService))
+	}
 
 	addr := ":" + cfg.httpPort
 	srv := &http.Server{
@@ -166,6 +195,8 @@ type config struct {
 	maxIdleConns    int
 	connMaxLifetime time.Duration
 	olMaxRetries    int
+	natsURL         string
+	natsMaxRetries  int
 }
 
 func loadConfig() config {
@@ -176,6 +207,8 @@ func loadConfig() config {
 		maxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 140),
 		connMaxLifetime: getEnvDuration("DB_CONN_MAX_LIFETIME", 5*time.Minute),
 		olMaxRetries:    getEnvInt("OL_MAX_RETRIES", 5),
+		natsURL:         getEnv("NATS_URL", ""),
+		natsMaxRetries:  getEnvInt("NATS_OL_MAX_RETRIES", 5),
 	}
 }
 

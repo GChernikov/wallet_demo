@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	natsrepo "github.com/gchernikov/wa
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func main() {
@@ -57,8 +59,48 @@ func run() error {
 	olIDs100 := generateAndInsert(db, 100)
 	writeJSON("loadtest/wallets-ol-100.json", olIDs100)
 
+	// NATS seeding — only if NATS_URL is set.
+	if natsURL := getEnv("NATS_URL", ""); natsURL != "" {
+		nc, js, err := natsrepo.Connect(natsURL)
+		if err != nil {
+			return fmt.Errorf("connect to nats: %w", err)
+		}
+		defer nc.Drain() //nolint:errcheck
+
+		log.Println("seeding 750 wallets into NATS...")
+		natsIDs750 := generateAndPublish(js, 750)
+		writeJSON("loadtest/wallets-nats-750.json", natsIDs750)
+
+		log.Println("seeding 100 wallets into NATS...")
+		natsIDs100 := generateAndPublish(js, 100)
+		writeJSON("loadtest/wallets-nats-100.json", natsIDs100)
+	}
+
 	log.Println("seed complete")
 	return nil
+}
+
+// generateAndPublish creates count wallets with random UUIDs, seeds them into NATS, and returns IDs.
+func generateAndPublish(js jetstream.JetStream, count int) []string {
+	ids := make([]string, count)
+	for i := range ids {
+		ids[i] = uuid.New().String()
+	}
+
+	seedPayload, _ := json.Marshal(natsrepo.WalletEvent{ //nolint:errchkjson
+		Amount:        1_000_000,
+		TransactionID: "seed",
+		EventType:     "credit",
+	})
+
+	for _, id := range ids {
+		_, err := js.Publish(context.Background(), "wallets."+id, seedPayload,
+			jetstream.WithExpectLastSequencePerSubject(0))
+		if err != nil {
+			log.Printf("warn: already seeded %s, skipping", id)
+		}
+	}
+	return ids
 }
 
 // generateAndInsert creates count wallets with random UUIDs, inserts them, and returns the UUID strings.
