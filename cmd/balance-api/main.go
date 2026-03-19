@@ -86,7 +86,10 @@ func run() error {
 			return fmt.Errorf("nats projection did not become ready within 30s")
 		}
 
-		natsService := service.NewNatsOCCService(js, proj, cfg.natsMaxRetries)
+		natsService, err := service.NewNatsOCCService(js, proj, cfg.natsMaxRetries)
+		if err != nil {
+			return fmt.Errorf("init nats occ service: %w", err)
+		}
 		mux.HandleFunc("POST /balances/update/nats-occ", updateHandler(natsService))
 	}
 

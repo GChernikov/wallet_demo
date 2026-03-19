@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	natsrepo "github.com/gchernikov/wa
+	natsrepo "github.com/gchernikov/wallet_demo/internal/repository/nats"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
@@ -89,6 +89,7 @@ func generateAndPublish(js jetstream.JetStream, count int) []string {
 
 	seedPayload, _ := json.Marshal(natsrepo.WalletEvent{ //nolint:errchkjson
 		Amount:        1_000_000,
+		NewBalance:    1_000_000,
 		TransactionID: "seed",
 		EventType:     "credit",
 	})
